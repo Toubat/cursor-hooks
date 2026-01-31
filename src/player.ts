@@ -5,9 +5,9 @@
  * Includes audio queue to prevent overlapping sounds
  */
 
-import { spawn, spawnSync } from "bun";
+import { spawnSync } from "bun";
+import { existsSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, resolve } from "path";
-import { unlinkSync, existsSync, writeFileSync } from "fs";
 import { SOUND_MAPPINGS, getStopSoundKey } from "./sounds";
 import type { Faction, HookInput, PostToolUseInput, StopInput } from "./types";
 
@@ -25,7 +25,7 @@ const POLL_INTERVAL_MS = 50; // Check every 50ms
  */
 async function acquireLock(): Promise<boolean> {
   const startTime = Date.now();
-  
+
   while (existsSync(LOCK_FILE)) {
     // Check if lock is stale (older than 5 seconds = stuck process)
     try {
@@ -33,20 +33,22 @@ async function acquireLock(): Promise<boolean> {
       const lockTime = parseInt(await stat.text(), 10);
       if (Date.now() - lockTime > 5000) {
         // Stale lock, remove it
-        try { unlinkSync(LOCK_FILE); } catch {}
+        try {
+          unlinkSync(LOCK_FILE);
+        } catch {}
         break;
       }
     } catch {}
-    
+
     // Timeout check
     if (Date.now() - startTime > MAX_WAIT_MS) {
       console.error("[EVA] Timeout waiting for audio lock");
       return false;
     }
-    
+
     await Bun.sleep(POLL_INTERVAL_MS);
   }
-  
+
   // Create lock with current timestamp
   try {
     writeFileSync(LOCK_FILE, Date.now().toString());
@@ -187,7 +189,9 @@ export async function playSound(filePath: string): Promise<void> {
     // Acquire lock (wait for previous audio to finish)
     const gotLock = await acquireLock();
     if (!gotLock) {
-      console.error(`[EVA] Could not acquire audio lock, skipping: ${filePath}`);
+      console.error(
+        `[EVA] Could not acquire audio lock, skipping: ${filePath}`
+      );
       return;
     }
 
