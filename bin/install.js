@@ -10,18 +10,92 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const readline = require("readline");
 
-// ANSI colors
+// ANSI codes
 const colors = {
   red: "\x1b[0;31m",
   green: "\x1b[0;32m",
   yellow: "\x1b[1;33m",
   blue: "\x1b[0;34m",
+  cyan: "\x1b[0;36m",
+  dim: "\x1b[2m",
+  bold: "\x1b[1m",
   reset: "\x1b[0m",
+};
+
+const cursor = {
+  hide: "\x1b[?25l",
+  show: "\x1b[?25h",
+  up: "\x1b[1A",
+  clearLine: "\x1b[2K",
 };
 
 function log(color, message) {
   console.log(`${color}${message}${colors.reset}`);
+}
+
+/**
+ * Interactive yes/no prompt with arrow key navigation
+ */
+function confirm(question) {
+  return new Promise((resolve) => {
+    let selected = 0; // 0 = Yes, 1 = No
+
+    const render = () => {
+      const yes = selected === 0 
+        ? `${colors.green}${colors.bold}▸ Yes${colors.reset}` 
+        : `${colors.dim}  Yes${colors.reset}`;
+      const no = selected === 1 
+        ? `${colors.red}${colors.bold}▸ No${colors.reset}` 
+        : `${colors.dim}  No${colors.reset}`;
+      
+      process.stdout.write(`${cursor.clearLine}\r  ${yes}    ${no}  ${colors.dim}(←/→ to select, enter to confirm)${colors.reset}`);
+    };
+
+    console.log();
+    console.log(`${colors.yellow}⚠${colors.reset}  ${question}`);
+    process.stdout.write(cursor.hide);
+    render();
+
+    // Enable raw mode for keypress detection
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
+    }
+    process.stdin.resume();
+    process.stdin.setEncoding("utf8");
+
+    const onKeypress = (key) => {
+      // Ctrl+C
+      if (key === "\u0003") {
+        process.stdout.write(cursor.show);
+        console.log("\n");
+        log(colors.yellow, "Installation cancelled.");
+        process.exit(0);
+      }
+
+      // Arrow keys (left/right) or h/l or y/n
+      if (key === "\u001b[D" || key === "h" || key === "y" || key === "Y") {
+        // Left arrow or h or y = Yes
+        selected = 0;
+        render();
+      } else if (key === "\u001b[C" || key === "l" || key === "n" || key === "N") {
+        // Right arrow or l or n = No
+        selected = 1;
+        render();
+      } else if (key === "\r" || key === "\n") {
+        // Enter
+        process.stdin.setRawMode(false);
+        process.stdin.pause();
+        process.stdin.removeListener("data", onKeypress);
+        process.stdout.write(cursor.show);
+        console.log("\n");
+        resolve(selected === 0);
+      }
+    };
+
+    process.stdin.on("data", onKeypress);
+  });
 }
 
 function copyRecursive(src, dest) {
@@ -49,8 +123,9 @@ function countFiles(dir, extension) {
   return count;
 }
 
-function main() {
+async function main() {
   // Banner
+  console.log();
   log(colors.blue, "╔═══════════════════════════════════════════════════════╗");
   log(
     colors.blue,
@@ -65,23 +140,43 @@ function main() {
   const targetDir = path.join(cursorDir, "hooks", "ra2-eva");
   const hooksJsonPath = path.join(cursorDir, "hooks.json");
 
+  // Check if hooks.json exists and warn user
+  const hooksJsonExists = fs.existsSync(hooksJsonPath);
+  
+  if (hooksJsonExists) {
+    console.log(`${colors.cyan}Found existing:${colors.reset} ${hooksJsonPath}`);
+    console.log();
+    console.log(`${colors.dim}This will override your existing hooks.json configuration.${colors.reset}`);
+    console.log(`${colors.dim}Your current hooks will be replaced with RA2 EVA hooks.${colors.reset}`);
+    
+    const proceed = await confirm("Do you want to continue?");
+    
+    if (!proceed) {
+      log(colors.yellow, "Installation cancelled. Your hooks.json was not modified.");
+      process.exit(0);
+    }
+  } else {
+    console.log(`${colors.dim}No existing hooks.json found. A new one will be created.${colors.reset}`);
+    console.log();
+  }
+
   // Source paths (relative to this script's package)
   const packageRoot = path.join(__dirname, "..");
   const srcDir = path.join(packageRoot, "src");
   const assetsDir = path.join(packageRoot, "assets");
 
   // Step 1: Remove existing installation
-  log(colors.yellow, "[1/5] Removing existing installation...");
+  log(colors.yellow, "[1/4] Removing existing installation...");
   if (fs.existsSync(targetDir)) {
     fs.rmSync(targetDir, { recursive: true, force: true });
   }
 
   // Step 2: Create directory structure
-  log(colors.yellow, "[2/5] Creating directory structure...");
+  log(colors.yellow, "[2/4] Creating directory structure...");
   fs.mkdirSync(targetDir, { recursive: true });
 
   // Step 3: Copy TypeScript source files
-  log(colors.yellow, "[3/5] Copying TypeScript source files...");
+  log(colors.yellow, "[3/4] Copying source files & assets...");
   const srcFiles = ["index.ts", "player.ts", "sounds.ts", "types.ts"];
   for (const file of srcFiles) {
     const srcPath = path.join(srcDir, file);
@@ -91,8 +186,7 @@ function main() {
     }
   }
 
-  // Step 4: Copy audio assets
-  log(colors.yellow, "[4/5] Copying audio assets...");
+  // Copy audio assets
   const assetsTargetDir = path.join(targetDir, "assets");
   copyRecursive(assetsDir, assetsTargetDir);
 
@@ -106,14 +200,14 @@ function main() {
     : 0;
 
   console.log(
-    `    Allied EVA sounds: ${colors.green}${alliedCount}${colors.reset}`
+    `    ${colors.dim}Allied EVA sounds:${colors.reset} ${colors.green}${alliedCount}${colors.reset}`
   );
   console.log(
-    `    Soviet EVA sounds: ${colors.green}${sovietCount}${colors.reset}`
+    `    ${colors.dim}Soviet EVA sounds:${colors.reset} ${colors.green}${sovietCount}${colors.reset}`
   );
 
-  // Step 5: Configure hooks.json
-  log(colors.yellow, "[5/5] Configuring hooks.json...");
+  // Step 4: Configure hooks.json
+  log(colors.yellow, "[4/4] Configuring hooks.json...");
 
   const hookCommand = `bun run ${targetDir}/index.ts`;
   const hookEvents = [
@@ -136,20 +230,7 @@ function main() {
     "afterAgentThought",
   ];
 
-  // Load existing hooks.json or create new
-  let hooksConfig = { version: 1, hooks: {} };
-  if (fs.existsSync(hooksJsonPath)) {
-    try {
-      const existing = JSON.parse(fs.readFileSync(hooksJsonPath, "utf8"));
-      hooksConfig = existing;
-      if (!hooksConfig.hooks) {
-        hooksConfig.hooks = {};
-      }
-    } catch (e) {
-      // If parsing fails, start fresh
-      hooksConfig = { version: 1, hooks: {} };
-    }
-  }
+  const hooksConfig = { version: 1, hooks: {} };
 
   // Add RA2 EVA hooks
   for (const event of hookEvents) {
@@ -173,15 +254,16 @@ function main() {
     "╚═══════════════════════════════════════════════════════╝"
   );
   console.log();
-  console.log(`Installed to: ${colors.blue}${targetDir}${colors.reset}`);
-  console.log(`Hooks config: ${colors.blue}${hooksJsonPath}${colors.reset}`);
+  console.log(`${colors.dim}Installed to:${colors.reset}  ${colors.blue}${targetDir}${colors.reset}`);
+  console.log(`${colors.dim}Hooks config:${colors.reset}  ${colors.blue}${hooksJsonPath}${colors.reset}`);
   console.log();
+  
   log(colors.yellow, "Faction selection:");
   console.log(
-    `  • Odd hours (1,3,5...):  ${colors.blue}Allied EVA${colors.reset} (English)`
+    `  ${colors.dim}•${colors.reset} Odd hours (1,3,5...):  ${colors.blue}Allied EVA${colors.reset} ${colors.dim}(English)${colors.reset}`
   );
   console.log(
-    `  • Even hours (0,2,4...): ${colors.red}Soviet EVA${colors.reset} (Russian accent)`
+    `  ${colors.dim}•${colors.reset} Even hours (0,2,4...): ${colors.red}Soviet EVA${colors.reset} ${colors.dim}(Russian accent)${colors.reset}`
   );
   console.log();
 
@@ -189,20 +271,25 @@ function main() {
   const faction = currentHour % 2 === 1 ? "Allied" : "Soviet";
   const factionColor = currentHour % 2 === 1 ? colors.blue : colors.red;
   console.log(
-    `Current hour: ${currentHour} → ${factionColor}${faction}${colors.reset} faction active`
+    `${colors.dim}Current hour:${colors.reset} ${currentHour} → ${factionColor}${faction}${colors.reset} ${colors.dim}faction active${colors.reset}`
   );
   console.log();
+  
   log(colors.yellow, "Prerequisites:");
-  console.log("  • Bun runtime must be installed (https://bun.sh)");
-  console.log("  • Run: curl -fsSL https://bun.sh/install | bash");
+  console.log(`  ${colors.dim}•${colors.reset} Bun runtime must be installed ${colors.dim}(https://bun.sh)${colors.reset}`);
+  console.log(`  ${colors.dim}•${colors.reset} Run: ${colors.cyan}curl -fsSL https://bun.sh/install | bash${colors.reset}`);
   console.log();
-  log(colors.yellow, "To activate:");
-  console.log("  Restart Cursor or reload the window");
+  
+  log(colors.yellow, "Next steps:");
+  console.log(`  ${colors.dim}•${colors.reset} Restart Cursor or reload the window`);
   console.log();
+  
   log(colors.yellow, "To uninstall:");
-  console.log("  npx ra2-eva-cursor-hooks --uninstall");
+  console.log(`  ${colors.cyan}npx ra2-eva-cursor-hooks --uninstall${colors.reset}`);
   console.log();
+  
   log(colors.green, "Establishing battlefield control. Stand by.");
+  console.log();
 }
 
 // Handle --uninstall flag
@@ -211,11 +298,13 @@ if (process.argv.includes("--uninstall")) {
   const targetDir = path.join(homeDir, ".cursor", "hooks", "ra2-eva");
   const hooksJsonPath = path.join(homeDir, ".cursor", "hooks.json");
 
+  console.log();
   log(colors.yellow, "Uninstalling RA2 EVA Cursor Hooks...");
+  console.log();
 
   if (fs.existsSync(targetDir)) {
     fs.rmSync(targetDir, { recursive: true, force: true });
-    log(colors.green, `Removed: ${targetDir}`);
+    log(colors.green, `✓ Removed: ${targetDir}`);
   }
 
   if (fs.existsSync(hooksJsonPath)) {
@@ -235,15 +324,29 @@ if (process.argv.includes("--uninstall")) {
           }
         }
         fs.writeFileSync(hooksJsonPath, JSON.stringify(config, null, 2));
-        log(colors.green, "Cleaned up hooks.json");
+        log(colors.green, "✓ Cleaned up hooks.json");
       }
     } catch (e) {
       // Ignore errors
     }
   }
 
+  console.log();
   log(colors.green, "Uninstallation complete. Battle control terminated.");
+  console.log();
   process.exit(0);
 }
 
-main();
+// Handle -y flag for non-interactive install
+if (process.argv.includes("-y") || process.argv.includes("--yes")) {
+  // Skip confirmation, run directly
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+} else {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
