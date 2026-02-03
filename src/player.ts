@@ -18,8 +18,14 @@ const ASSETS_DIR = resolve(__dirname, "assets", "audio");
 
 // Lock file for audio queue
 const LOCK_FILE = "/tmp/ra2-eva-audio.lock";
+const LAST_AUDIO_FILE = "/tmp/ra2-eva-last-audio.txt";
 const MAX_WAIT_MS = 10000; // Max 10 seconds to wait for lock
 const POLL_INTERVAL_MS = 50; // Check every 50ms
+
+// Probability settings for specific hooks
+const HOOK_PROBABILITIES: Record<string, number> = {
+  afterAgentThought: 0.25, // "Incoming transmission" plays 25% of the time
+};
 
 /**
  * Sleep for a given number of milliseconds
@@ -89,6 +95,38 @@ export function getFaction(): Faction {
  */
 function randomChoice<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/**
+ * Get the last played audio path
+ */
+function getLastPlayedAudio(): string | null {
+  try {
+    if (existsSync(LAST_AUDIO_FILE)) {
+      return readFileSync(LAST_AUDIO_FILE, "utf8").trim();
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Set the last played audio path
+ */
+function setLastPlayedAudio(audioPath: string): void {
+  try {
+    writeFileSync(LAST_AUDIO_FILE, audioPath);
+  } catch {}
+}
+
+/**
+ * Check if a hook should play based on its probability setting
+ */
+function shouldPlayByProbability(hookName: string): boolean {
+  const probability = HOOK_PROBABILITIES[hookName];
+  if (probability === undefined) {
+    return true; // No probability set, always play
+  }
+  return Math.random() < probability;
 }
 
 /**
@@ -236,11 +274,27 @@ export async function playSound(filePath: string): Promise<void> {
 export async function playHookSound(input: HookInput): Promise<void> {
   const faction = getFaction();
   const soundKey = getSoundKey(input);
+
+  // Check probability for this hook
+  if (soundKey && !shouldPlayByProbability(soundKey)) {
+    console.error(`[EVA] Skipping ${soundKey} (probability check failed)`);
+    return;
+  }
+
   const soundPath = getSoundPath(soundKey, faction);
 
   console.error(`[EVA] Faction: ${faction}, Sound key: ${soundKey}`);
 
   if (soundPath) {
+    // Check for duplicate audio (don't play same sound twice in a row)
+    const lastAudio = getLastPlayedAudio();
+    if (lastAudio === soundPath) {
+      console.error(`[EVA] Skipping duplicate audio: ${soundPath}`);
+      return;
+    }
+
+    // Update last played audio and play
+    setLastPlayedAudio(soundPath);
     await playSound(soundPath);
   }
 }
